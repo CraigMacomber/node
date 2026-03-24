@@ -609,6 +609,58 @@ test('GH-14441. Circular structures should be consistent', () => {
   }
 });
 
+
+// Confirmed to fail in Node.JS v24.14.0 and v25.8.1
+// Regressed from v22.22.1 which works as expected.
+// 
+// Node.js's `deepStrictEqual` (and `strict.deepEqual`) uses an internal
+// `detectCycles` function that starts with `memos = null` (no cycle
+// detection).  The first time a comparison throws during the null-memos
+// path — typically a stack overflow caused by comparing two circular
+// structures — `detectCycles` is permanently replaced by `innerDeepEqual`,
+// which passes a live `memos` object through every recursive call.
+//
+// In that memo-enabled mode the cycle-detection set (`memos.set`) is
+// seeded with the *current* val2 (`memos.d`) when it is first created.
+// That seed is never removed after the nested comparison returns, so when
+// the same expected object reference appears as val2 in a sibling
+// comparison, `set.add(sharedRef)` is a no-op.  The invariant
+// `originalSize === set.size - 2` then fails (only one new item was added
+// instead of two), and Node.js incorrectly concludes the structures are
+// not equal.
+test("deepStrictEqual rejects structurally equal arrays when expected has a shared reference and cycle detection is active", () => {
+  // `actual` has two *distinct* objects with identical content.
+  // `expected` reuses the *same* object reference at both positions.
+  const sharedExpected = { outer: { inner: 0 } };
+  const actualValues = [{ outer: { inner: 0 } }, { outer: { inner: 0 } }];
+  const expectedValues = [sharedExpected, sharedExpected];
+
+  // Works, but only if no cycles have been processed before running this test.
+  assert.deepStrictEqual(actualValues, expectedValues);
+
+  // Activate cycle-detection mode permanently in this process
+  // by comparing two isomorphic circular objects.
+  // The first attempt with null memos causes a stack overflow;
+  // the catch handler replaces detectCycles with innerDeepEqual for all future calls.
+  const circA = {};
+  circA.self = circA;
+  const circB = {};
+  circB.self = circB;
+  assert.deepStrictEqual(circA, circB); // triggers the permanent switch
+
+  // Individual element comparisons always pass …
+  assert.deepStrictEqual(actualValues[0], expectedValues[0]);
+  assert.deepStrictEqual(actualValues[1], expectedValues[1]);
+
+  // The combined comparison now fails because Node.js's
+  // cycle-detection set still contains `sharedExpected` from the first
+  // element's comparison when the second element is evaluated.
+  // Fails with:
+  // AssertionError [ERR_ASSERTION]: Values have same structure but are not reference-equal...
+  assert.deepStrictEqual(actualValues, expectedValues);
+});
+
+
 // https://github.com/nodejs/node-v0.x-archive/pull/7178
 test('Ensure reflexivity of deepEqual with `arguments` objects.', () => {
   const args = (function() { return arguments; })();
